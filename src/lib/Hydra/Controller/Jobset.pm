@@ -223,13 +223,16 @@ sub updateJobset {
     my $jobsetName = trim $c->request->params->{"name"};
     error($c, "Invalid jobset name: ‘$jobsetName’") if $jobsetName !~ /^$jobsetNameRE$/;
 
+    my $exprType = $c->request->params->{"exprtype"};
     my ($nixExprPath, $nixExprInput) = nixExprPathFromParams $c;
 
     $jobset->update(
         { name => $jobsetName
         , description => trim($c->request->params->{"description"})
+	, exprtype => $exprType
         , nixexprpath => $nixExprPath
         , nixexprinput => $nixExprInput
+	, guileexprentry => "eval-hydra-jobs" # FIXME
         , enabled => trim($c->request->params->{enabled}) eq "1" ? 1 : 0
         , enableemail => trim($c->request->params->{enableemail}) eq "1" ? 1 : 0
         , emailoverride => trim($c->request->params->{emailoverride}) || ""
@@ -306,8 +309,10 @@ sub clone_submit : Chained('jobset') PathPart('clone/submit') Args(0) {
         $newJobset = $jobset->project->jobsets->create(
             { name => $newJobsetName
             , description => $jobset->description
+	    , exprtype => $jobset->exprtype
             , nixexprpath => $jobset->nixexprpath
             , nixexprinput => $jobset->nixexprinput
+	    , guileexprentry => $jobset->guileexprentry
             , enabled => 0
             , enableemail => $jobset->enableemail
             , emailoverride => $jobset->emailoverride || ""

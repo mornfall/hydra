@@ -109,7 +109,7 @@ sub checkJobset {
     # Hash the arguments to hydra-eval-jobs and check the
     # JobsetInputHashes to see if the previous evaluation had the same
     # inputs.  If so, bail out.
-    my @args = ($jobset->nixexprinput, $jobset->nixexprpath, inputsToArgs($inputInfo));
+    my @args = ($jobset->nixexprinput, $jobset->nixexprpath, inputsToArgs($inputInfo, $jobset->exprtype));
     my $argsHash = sha256_hex("@args");
     my $prevEval = getPrevJobsetEval($db, $jobset, 0);
     if (defined $prevEval && $prevEval->hash eq $argsHash) {
@@ -122,7 +122,7 @@ sub checkJobset {
     
     # Evaluate the job expression.
     my $evalStart = time;
-    my ($jobs, $nixExprInput) = evalJobs($inputInfo, $jobset->nixexprinput, $jobset->nixexprpath);
+    my ($jobs, $nixExprInput) = evalJobs($inputInfo, $jobset->exprtype, $jobset->nixexprinput, $jobset->nixexprpath);
     my $evalStop = time;
 
     my $jobOutPathMap = {};

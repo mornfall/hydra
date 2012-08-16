@@ -146,10 +146,26 @@
 			    <td>[% INCLUDE maybeEditString param="description" value=jobset.description %]</td>
 			  </tr>
 			  <tr>
-			    <th>Nix expression:</th>
+			    <th>Implementation of build recipe:</th>
+			    <td>
+			      <tt>[% INCLUDE renderSelection
+				param="exprtype"
+				curValue=jobset.exprtype radiobuttons=1
+				options={"nix" = "Nix", "guile" = "GNU
+				Guile"} %]</tt>
+			    </td>
+			  </tr>
+			  <tr>
+			    <th>Build recipe:</th>
 			    <td>
 			      <tt>[% INCLUDE maybeEditString param="nixexprpath" value=jobset.nixexprpath extraClass="shortString" %]</tt> in input
 			      <tt>[% INCLUDE maybeEditString param="nixexprinput" value=jobset.nixexprinput extraClass="shortString" %]</tt>
+			    </td>
+			  </tr>
+			  <tr>
+			    <th>Guile entry point:</th>
+			    <td>
+			      <tt>[% INCLUDE maybeEditString param="guileexprentry" value=jobset.guileexprentry extraClass="shortString" %]</tt>
 			    </td>
 			  </tr>
 			  <tr>

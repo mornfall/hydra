@@ -146,6 +146,7 @@ sub create_jobset_submit : Chained('project') PathPart('create-jobset/submit') A
     requireProjectOwner($c, $c->stash->{project});
     
     my $jobsetName = trim $c->request->params->{name};
+    my $exprType = $c->request->params->{exprtype};
 
     error($c, "Invalid jobset name: ‘$jobsetName’") if $jobsetName !~ /^$jobsetNameRE$/;
 
@@ -153,7 +154,8 @@ sub create_jobset_submit : Chained('project') PathPart('create-jobset/submit') A
         # Note: $jobsetName is validated in updateProject, which will
         # abort the transaction if the name isn't valid.
         my $jobset = $c->stash->{project}->jobsets->create(
-            {name => $jobsetName, nixexprinput => "", nixexprpath => "", emailoverride => ""});
+            {name => $jobsetName, exprtype => $exprType,
+	     nixexprinput => "", nixexprpath => "", emailoverride => ""});
         Hydra::Controller::Jobset::updateJobset($c, $jobset);
     });
     

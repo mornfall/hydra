@@ -40,6 +40,11 @@ __PACKAGE__->table("Jobsets");
   data_type: 'text'
   is_nullable: 1
 
+=head2 exprtype
+
+  data_type: 'text'
+  is_nullable: 0
+
 =head2 nixexprinput
 
   data_type: 'text'
@@ -50,6 +55,11 @@ __PACKAGE__->table("Jobsets");
 
   data_type: 'text'
   is_nullable: 0
+
+=head2 guileexprentry
+
+  data_type: 'text'
+  is_nullable: 1
 
 =head2 errormsg
 
@@ -104,10 +114,14 @@ __PACKAGE__->add_columns(
   { data_type => "text", is_foreign_key => 1, is_nullable => 0 },
   "description",
   { data_type => "text", is_nullable => 1 },
+  "exprtype",
+  { data_type => "text", is_nullable => 0 },
   "nixexprinput",
   { data_type => "text", is_foreign_key => 1, is_nullable => 0 },
   "nixexprpath",
   { data_type => "text", is_nullable => 0 },
+  "guileexprentry",
+  { data_type => "text", is_nullable => 1 },
   "errormsg",
   { data_type => "text", is_nullable => 1 },
   "errortime",
@@ -240,7 +254,7 @@ Related object: L<Hydra::Schema::Projects>
 __PACKAGE__->belongs_to("project", "Hydra::Schema::Projects", { name => "project" }, {});
 
 
-# Created by DBIx::Class::Schema::Loader v0.07014 @ 2011-12-05 14:15:43
-# DO NOT MODIFY THIS OR ANYTHING ABOVE! md5sum:Ikvo8+cq03DzjEUvXSqYiQ
+# Created by DBIx::Class::Schema::Loader v0.07014 @ 2012-08-11 23:07:27
+# DO NOT MODIFY THIS OR ANYTHING ABOVE! md5sum:Sw8tux/9iqQ+6yO4jGLFNA
 
 1;

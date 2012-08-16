@@ -75,6 +75,10 @@ CPPFLAGS="$old_CPPFLAGS"
 LIBS="$old_LIBS"
 
 PKG_CHECK_MODULES([BDW_GC], [bdw-gc])
+PKG_CHECK_MODULES([GUILE], [guile-2.0], [HAVE_GUILE=yes], [HAVE_GUILE=no])
+if test "x$HAVE_GUILE" = xyes; then
+  AC_DEFINE([HAVE_GUILE], [1], [Define to 1 when GNU Guile is available.])
+fi
 
 testPath="$(dirname $(type -p expr))"
 AC_SUBST(testPath)

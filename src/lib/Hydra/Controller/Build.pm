@@ -462,6 +462,7 @@ sub clone_submit : Chained('build') PathPart('clone/submit') Args(0) {
     requireProjectOwner($c, $build->project);
 
     my ($nixExprPath, $nixExprInputName) = Hydra::Controller::Jobset::nixExprPathFromParams $c;
+    my $exprType = $c->request->params->{"exprtype"};
 
     my $jobName = trim $c->request->params->{"jobname"};
     error($c, "Invalid job name: $jobName") if $jobName !~ /^$jobNameRE$/;
@@ -488,7 +489,7 @@ sub clone_submit : Chained('build') PathPart('clone/submit') Args(0) {
         error($c, $@) if $@;
     }
 
-    my ($jobs, $nixExprInput) = evalJobs($inputInfo, $nixExprInputName, $nixExprPath);
+    my ($jobs, $nixExprInput) = evalJobs($inputInfo, $exprType, $nixExprInputName, $nixExprPath);
 
     my $job;
     foreach my $j (@{$jobs->{job}}) {
