@@ -24,11 +24,16 @@ sub api : Chained('/') PathPart('api') CaptureArgs(0) {
 
 sub buildToHash {
     my ($build) = @_;
+    my @evals;
+    foreach my $m ($build->jobsetevalmembers->all) {
+        push @evals, $m->get_column("eval");
+    }
     my $result = {
         id => $build->id,
         project => $build->get_column("project"),
         jobset => $build->get_column("jobset"),
         job => $build->get_column("job"),
+        evals => \@evals,
         system => $build->system,
         nixname => $build->nixname,
         finished => $build->finished,
