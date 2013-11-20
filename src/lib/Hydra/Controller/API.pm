@@ -102,6 +102,7 @@ sub latestevals: Chained('api') PathPart('latestevals') Args(0) {
     my $filter;
     $filter->{project} = $project if ! $project eq "";
     $filter->{jobset} = $jobset if ! $jobset eq "";
+    $filter->{nrbuilds} = { '>', 0 };
 
     my @latest = $c->model('DB::JobsetEvals')->search($filter, {rows => $nr, order_by => ["id DESC"] });
 
