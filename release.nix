@@ -1,5 +1,5 @@
 { hydraSrc ? { outPath = ./.; revCount = 1234; gitTag = "abcdef"; }
-, officialRelease ? false
+, officialRelease ? false, nix ? null
 }:
 
 let
@@ -24,6 +24,10 @@ let
 
       environment.systemPackages = [ pkgs.perlPackages.LWP pkgs.perlPackages.JSON ];
     };
+
+  use_nix = system: if nix == null
+      then (import <nixpkgs> { inherit system; }).nixUnstable
+      else builtins.getAttr system nix;
 
 in rec {
 
@@ -51,7 +55,7 @@ in rec {
       '';
 
       configureFlags =
-        [ "--with-nix=${nixUnstable}"
+        [ "--with-nix=${use_nix pkgs.system}"
           "--with-docbook-xsl=${docbook_xsl}/xml/xsl/docbook"
         ];
 
@@ -72,8 +76,6 @@ in rec {
     with import <nixpkgs> { inherit system; };
 
     let
-
-      nix = nixUnstable;
 
       perlDeps = buildEnv {
         name = "hydra-perl-deps";
@@ -119,7 +121,7 @@ in rec {
             TextTable
             XMLSimple
             NetAmazonS3
-            nix git
+            (use_nix system) git
           ];
       };
 
@@ -128,7 +130,7 @@ in rec {
     releaseTools.nixBuild {
       name = "hydra";
       src = tarball;
-      configureFlags = "--with-nix=${nix}";
+      configureFlags = "--with-nix=${use_nix system}";
 
       buildInputs =
         [ makeWrapper libtool unzip nukeReferences pkgconfig boehmgc sqlite
@@ -138,7 +140,7 @@ in rec {
         ];
 
       hydraPath = lib.makeSearchPath "bin" (
-        [ libxslt sqlite subversion openssh nix coreutils findutils
+        [ libxslt sqlite subversion openssh (use_nix system) coreutils findutils
           gzip bzip2 lzma gnutar unzip git gitAndTools.topGit mercurial darcs gnused graphviz bazaar
         ] ++ lib.optionals stdenv.isLinux [ rpm dpkg cdrkit ] );
 
@@ -157,7 +159,7 @@ in rec {
                 --prefix PATH ':' $out/bin:$hydraPath \
                 --set HYDRA_RELEASE ${tarball.version} \
                 --set HYDRA_HOME $out/libexec/hydra \
-                --set NIX_RELEASE ${nix.name}
+                --set NIX_RELEASE ${(use_nix system).name}
         done
       ''; # */
 
