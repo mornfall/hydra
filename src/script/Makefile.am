@@ -7,6 +7,7 @@ distributable_scripts =				\
   hydra-build					\
   hydra-evaluator				\
   hydra-queue-runner				\
+  hydra-queue-runner-muxed			\
   hydra-server					\
   hydra-update-gc-roots				\
   hydra-s3-backup-collect-garbage		\
