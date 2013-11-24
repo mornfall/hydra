@@ -1,0 +1,591 @@
+#! /var/run/current-system/sw/bin/perl -w
+
+use strict;
+use Cwd;
+use File::Basename;
+use POSIX qw(dup2 :sys_wait_h);
+use Hydra::Plugin;
+use Hydra::Schema;
+use Hydra::Helper::Nix;
+use Hydra::Model::DB;
+use Hydra::Helper::AddBuilds;
+use Hydra::Helper::PluginHooks;
+use IO::Handle;
+use Nix::Store;
+use File::stat;
+use List::MoreUtils qw(all);
+use IO::Select;
+
+my $db = Hydra::Model::DB->new();
+my $config = getHydraConfig();
+my @plugins = Hydra::Plugin->instantiate(db => $db, config => $config);
+
+STDOUT->autoflush();
+
+my $lastTime;
+
+my %running;
+my $mux = new IO::Select;
+my %depcache; # drvpath -> [drvpath]
+
+#$SIG{CHLD} = 'IGNORE';
+
+## BUILDING ##
+
+sub addBuildStepOutputs {
+    my ($step) = @_;
+    my $drv = derivationFromPath($step->drvpath);
+    $step->buildstepoutputs->create({ name => $_, path => $drv->{outputs}->{$_} })
+        foreach keys %{$drv->{outputs}};
+}
+
+
+sub nextFreeStepNr {
+    my ($build) = @_;
+    my $max = $build->buildsteps->find(
+        {}, {select => {max => 'stepnr + 1'}, as => ['max']});
+    return (defined $max && defined $max->get_column('max')) ? $max->get_column('max') : 1;
+}
+
+
+sub failDependents {
+    my ($drvPath, $status, $errorMsg, $dependents) = @_;
+
+    # Get the referrer closure of $drvPath.
+    my @dependentDrvs = computeFSClosure(1, 0, $drvPath);
+
+    my $time = time();
+
+    txn_do($db, sub {
+
+        my @dependentBuilds = $db->resultset('Builds')->search(
+            { drvpath => [ @dependentDrvs ], finished => 0, busy => 0 });
+
+        for my $d (@dependentBuilds) {
+            print STDERR "failing dependent build ", $d->id, " of ", $d->project->name, ":", $d->jobset->name, ":", $d->job->name, "\n";
+            $d->update(
+                { finished => 1
+                , logfile => ''
+                , iscachedbuild => 0
+                , buildstatus => $drvPath eq $d->drvpath ? 1 : 2
+                , starttime => $time
+                , stoptime => $time
+                , errormsg => undef
+                });
+
+            my $step = $d->buildsteps->create(
+                { stepnr => nextFreeStepNr($d)
+                , type => 0 # = build
+                , drvpath => $drvPath
+                , busy => 0
+                , status => $status
+                , starttime => time
+                , stoptime => time
+                , errormsg => $errorMsg
+                });
+            addBuildStepOutputs($step);
+
+            push @$dependents, $d;
+        }
+
+    });
+}
+
+sub watchBuild {
+    my ($state) = @_;
+
+    my $build = $state->{build};
+    my $drvPath   = $build->drvpath;
+
+    $state->{errormsg} .= $state->{buffer};
+
+    print ("watch-build " . $build->id . ", pid " . $state->{pid} . ": " . $state->{buffer});
+    unless ($state->{buffer} =~ /^@\s+/) {
+        print { $state->{logfd} } $state->{buffer};
+        return;
+    }
+
+    if ($state->{buffer} =~ /^@\s+build-started\s+(\S+)\s+(\S+)\s+(\S+)\s+(\S+)$/) {
+        my $drvPathStep = $1;
+        txn_do($db, sub {
+            my $step = $build->buildsteps->create(
+                { stepnr => ($state->{buildSteps}->{$drvPathStep} = $state->{buildStepNr}++)
+                , type => 0 # = build
+                , drvpath => $drvPathStep
+                , system => $3
+                , busy => 1
+                , starttime => time
+            });
+            addBuildStepOutputs($step);
+        });
+    }
+
+    elsif ($state->{buffer} =~ /^@\s+build-remote\s+(\S+)\s+(\S+)$/) {
+        my $drvPathStep = $1;
+        my $machine = $2;
+        txn_do($db, sub {
+            my $step = $build->buildsteps->find({stepnr => $state->{buildSteps}->{$drvPathStep}}) or die;
+            $step->update({machine => $machine});
+        });
+    }
+
+    elsif ($state->{buffer} =~ /^@\s+build-succeeded\s+(\S+)\s+(\S+)$/) {
+        my $drvPathStep = $1;
+        txn_do($db, sub {
+            my $step = $build->buildsteps->find({stepnr => $state->{buildSteps}->{$drvPathStep}}) or die;
+            $step->update({busy => 0, status => 0, stoptime => time});
+        });
+    }
+
+    elsif ($state->{buffer} =~ /^@\s+build-failed\s+(\S+)\s+(\S+)\s+(\S+)\s+(.*)$/) {
+        my $drvPathStep = $1;
+        $state->{someBuildFailed} = 1;
+        $state->{thisBuildFailed} = 1 if $drvPath eq $drvPathStep;
+        my $errorMsg;
+        my $status = 1;
+        if ($3 eq "cached") {
+            $status = 8;
+        } elsif ($3 eq "timeout") {
+            $status = 7;
+        } else {
+            $errorMsg = $4;
+        }
+        txn_do($db, sub {
+            if ($state->{buildSteps}->{$drvPathStep}) {
+                my $step = $build->buildsteps->find({stepnr => $state->{buildSteps}->{$drvPathStep}}) or die;
+                $step->update({busy => 0, status => $status, errormsg => $errorMsg, stoptime => time});
+            }
+            # Don't write a record if this derivation already
+            # failed previously.  This can happen if this is a
+            # restarted build.
+            elsif (scalar $build->buildsteps->search({drvpath => $drvPathStep, type => 0, busy => 0, status => 1}) == 0) {
+                my $step = $build->buildsteps->create(
+                    { stepnr => ($state->{buildSteps}->{$drvPathStep} = $state->{buildStepNr}++)
+                    , type => 0 # = build
+                    , drvpath => $drvPathStep
+                    , busy => 0
+                    , status => $status
+                    , starttime => time
+                    , stoptime => time
+                    , errormsg => $errorMsg
+                    });
+                addBuildStepOutputs($step);
+            }
+        });
+
+        # Immediately fail all builds that depend on this derivation.
+        failDependents($drvPathStep, $status, $errorMsg, $state->{dependents});
+    }
+
+    elsif ($state->{buffer} =~ /^@\s+substituter-started\s+(\S+)\s+(\S+)$/) {
+        my $path = $1;
+        txn_do($db, sub {
+            my $step = $build->buildsteps->create(
+                { stepnr => ($state->{buildSteps}->{$path} = $state->{buildStepNr}++)
+                , type => 1 # = substitution
+                , busy => 1
+                , starttime => time
+                });
+            # "out" is kinda fake (substitutions don't have named outputs).
+            $step->buildstepoutputs->create({ name => "out", path => $path });
+        });
+    }
+
+    elsif ($state->{buffer} =~ /^@\s+substituter-succeeded\s+(\S+)$/) {
+        my $path = $1;
+        txn_do($db, sub {
+            my $step = $build->buildsteps->find({stepnr => $state->{buildSteps}->{$path}}) or die;
+            $step->update({busy => 0, status => 0, stoptime => time});
+        });
+    }
+
+    elsif ($state->{buffer} =~ /^@\s+substituter-failed\s+(\S+)\s+(\S+)\s+(\S+)$/) {
+        my $path = $1;
+        txn_do($db, sub {
+            my $step = $build->buildsteps->find({stepnr => $state->{buildSteps}->{$path}}) or die;
+            $step->update({busy => 0, status => 1, errormsg => $3, stoptime => time});
+        });
+    }
+
+    else {
+        print { $state->{logfd} } "unknown Nix trace message: $_";
+    }
+}
+
+sub finishBuild {
+    my ($state) = @_;
+
+    print ("finish-build " . $state->{build}->id . ", pid " . $state->{pid} . "\n");
+
+    if ($state->{pid}) {
+        # wait for the process to finish
+        return if (waitpid($state->{pid}, WNOHANG) < 0);
+        my $res = $?;
+
+        delete $running{$state->{outfd}};
+        $mux->remove($state->{outfd});
+        $state->{stopTime} = time();
+        $state->{logfd}->close();
+        $state->{outfd}->close();
+
+        if ($res != 0) {
+            if ($state->{thisBuildFailed}) { $state->{buildStatus} = 1; }
+            elsif ($state->{someBuildFailed}) { $state->{buildStatus} = 2; }
+            else { $state->{buildStatus} = 3; }
+        }
+
+        # Only store the output of running Nix if we have a miscellaneous error.
+        $state->{errormsg} = undef unless $state->{buildStatus} == 3;
+    }
+
+    txn_do($db, sub {
+        if ($state->{buildStatus} == 0) {
+
+            my $size = 0;
+            my $closureSize = 0;
+            my $releaseName;
+
+            my @closure = computeFSClosure(0, 0, values $state->{outputs});
+            foreach my $path (@closure) {
+                my ($deriver, $hash, $time, $narSize, $refs) = queryPathInfo($path, 0);
+                $closureSize += $narSize;
+                $size += $narSize if grep { $path eq $_ } values($state->{outputs});
+            }
+
+            foreach my $path (values $state->{outputs}) {
+                $state->{buildStatus} = 6 if $state->{buildStatus} == 0 && -f "$path/nix-support/failed";
+                $releaseName //= getReleaseName($path);
+            }
+
+            $state->{build}->update(
+                { releasename => $releaseName
+                , size => $size
+                , closuresize => $closureSize
+                });
+
+            addBuildProducts($db, $state->{build});
+        }
+
+        # Mark any remaining active build steps as aborted.
+        $state->{build}->buildsteps->search({ busy => 1 })->update({ busy => 0, status => 4, stoptime => time });
+
+        $state->{build}->update(
+            { finished => 1
+            , busy => 0
+            , locker => ''
+            , logfile => ''
+            , iscachedbuild => $state->{cached}
+            , buildstatus => $state->{buildStatus}
+            , starttime => $state->{startTime}
+            , stoptime => $state->{stopTime} // time()
+            , errormsg => $state->{errormsg}
+            });
+
+    });
+
+    notifyBuildFinished(\@plugins, $state->{build}, $state->{dependents});
+}
+
+
+sub startBuild {
+    my ($build) = @_;
+
+    # mark the build as busy
+    txn_do($db, sub {
+        $build->update({busy => 1});
+        $build->buildsteps->search({busy => 1})->delete_all;
+        $build->buildproducts->delete_all;
+    });
+
+    my %outputs;
+    $outputs{$_->name} = $_->path foreach $build->buildoutputs->all;
+
+    my $state = {
+        build => $build,
+        pid => 0,
+        dependents => [],
+        buildStatus => 0,
+        startTime => time(),
+        stopTime => undef,
+        outputCreated => 1,
+        cached => 1,
+        outputs => \%outputs,
+        dependents => [],
+        errormsg => undef
+    };
+
+    print ("start-build " . $build->id . ", drv " . $build->drvpath . "\n");
+
+    my $drvPath   = $build->drvpath;
+    my $maxsilent = $build->maxsilent;
+    my $timeout   = $build->timeout;
+
+    if (!isValidPath($drvPath)) {
+        $state->{buildStatus} = 3;
+        $state->{errormsg} = "derivation was garbage-collected prior to build";
+        finishBuild($state);
+        return;
+    }
+
+    if (all { isValidPath($_) } values(%outputs)) {
+        finishBuild($state);
+    } else {
+        $state->{cached} = 0;
+        # Run Nix to perform the build, and monitor the stderr output
+        # to get notifications about specific build steps, the
+        # associated log files, etc.
+        my $cmd = "nix-store --realise $drvPath " .
+            "--timeout $timeout " .
+            "--max-silent-time $maxsilent --keep-going --fallback " .
+            "--no-build-output --log-type flat --print-build-trace " .
+            "--add-root " . gcRootFor($outputs{out} // $outputs{(sort keys %outputs)[0]}) . " 2>&1";
+
+        $state->{buildStepNr} = nextFreeStepNr($build);
+
+        my ($problem, $pid);
+        my $outfd = IO::Handle->new();
+        my $logfd = IO::Handle->new();
+
+        if ($build->logfile) {
+            open($logfd, ">", $build->logfile) or $problem = "Could not open logfile " . $build->logfile;
+        } else {
+            $logfd->fdopen(fileno(STDOUT), "w");
+        }
+
+        $logfd->autoflush();
+
+        $pid = open($outfd, "$cmd |") unless ($problem);
+
+        if ($pid) {
+            $state->{pid} = $pid;
+            $state->{logfd} = $logfd;
+            $state->{outfd} = $outfd;
+            $outfd->blocking(0);
+            $running{$outfd} = $state;
+            $mux->add($outfd);
+        } else {
+            if ($problem) {
+                warn ($problem . "(build " . $build->id . ")");
+            } else {
+                $logfd->close();
+                warn "Could not start build for " . $build->id;
+            }
+            txn_do($db, sub {
+                $build->update({busy => 0});
+            });
+        }
+    }
+    return $state;
+}
+
+## SCHEDULING
+
+sub unlockDeadBuilds {
+    # Unlock builds whose building process has died.
+    txn_do($db, sub {
+        my @builds = $db->resultset('Builds')->search({finished => 0, busy => 1});
+        foreach my $build (@builds) {
+            my $pid = $build->locker;
+            my $unlock = 0;
+            if ($pid == $$) {
+                if (!defined $lastTime || $build->starttime < $lastTime - 300) {
+                    $unlock = 1;
+                }
+            } elsif (kill(0, $pid) != 1) { # see if we can signal the process
+                $unlock = 1;
+            }
+            if ($unlock) {
+                print "build ", $build->id, " pid $pid died, unlocking\n";
+                $build->update({ busy => 0, locker => ""});
+                $build->buildsteps->search({ busy => 1 })->update({ busy => 0, status => 4, stoptime => time });
+            }
+        }
+    });
+}
+
+
+# Given a build, return an arbitrary queued build on which this build
+# depends; or undef if no such build exists.
+sub findBuildDependencyInQueue {
+    my ($buildsByDrv, $build) = @_;
+    return undef unless isValidPath($build->drvpath);
+
+    unless (exists $depcache{$build->drvpath}) {
+        my @deps = grep { /\.drv$/ && $_ ne $build->drvpath } queryReferences($build->drvpath);
+        $depcache{$build->drvpath} = \@deps;
+    }
+
+    my $deps = $depcache{$build->drvpath};
+
+    return unless scalar @$deps > 0;
+
+    foreach my $d (@$deps) {
+        my $b = $buildsByDrv->{$d};
+        next unless defined $b;
+        return $db->resultset('Builds')->find($b);
+    }
+
+    return undef;
+}
+
+
+sub checkBuilds {
+    # print "looking for runnable builds...\n";
+
+    my @buildsStarted;
+
+    my $machines = getMachines;
+
+    my %maxConcurrent;
+
+    foreach my $machineName (keys %{$machines}) {
+        foreach my $system (${$machines}{$machineName}{'systemTypes'}) {
+            $maxConcurrent{$system} = (${$machines}{$machineName}{'maxJobs'} or 0) + ($maxConcurrent{$system} or 0)
+        }
+    }
+
+    txn_do($db, sub {
+
+        # Cache scheduled by derivation path to speed up
+        # findBuildDependencyInQueue.
+        my $buildsByDrv = {};
+        $buildsByDrv->{$_->drvpath} = $_->id
+            foreach $db->resultset('Builds')->search({ finished => 0, enabled => 1 }, { join => ['project'] });
+
+        # Get the system types for the runnable builds.
+        my @systemTypes = $db->resultset('Builds')->search(
+            { finished => 0, busy => 0, enabled => 1 },
+            { join => ['project'], select => ['system'], as => ['system'], distinct => 1 });
+
+        # For each system type, select up to the maximum number of
+        # concurrent build for that system type.  Choose the highest
+        # priority builds first, then the oldest builds.
+        foreach my $system (@systemTypes) {
+            # How many builds are already currently executing for this
+            # system type?
+            my $nrActive = $db->resultset('Builds')->search(
+                {finished => 0, busy => 1, system => $system->system})->count;
+
+            (my $systemTypeInfo) = $db->resultset('SystemTypes')->search({system => $system->system});
+            my $max = defined $systemTypeInfo ? $systemTypeInfo->maxconcurrent : $maxConcurrent{$system->system} // 2;
+
+            my $extraAllowed = $max - $nrActive;
+            $extraAllowed = 0 if $extraAllowed < 0;
+
+            # Select the highest-priority builds to start.
+            my @builds = $extraAllowed == 0 ? () : $db->resultset('Builds')->search(
+                { finished => 0, busy => 0, system => $system->system, enabled => 1 },
+                { join => ['project'], order_by => ["priority DESC", "id"] });
+
+            my $started = 0;
+            foreach my $build (@builds) {
+                # Find a dependency of $build that has no queued
+                # dependencies itself.  This isn't strictly necessary,
+                # but it ensures that Nix builds are done as part of
+                # their corresponding Hydra builds, rather than as a
+                # dependency of some other Hydra build.
+                while (my $dep = findBuildDependencyInQueue($buildsByDrv, $build)) {
+                    $build = $dep;
+                }
+                next if $build->busy;
+
+                my $logfile = getcwd . "/logs/" . $build->id;
+                mkdir(dirname $logfile);
+                unlink($logfile);
+                $build->update(
+                    { busy => 1
+                    , locker => $$
+                    , logfile => $logfile
+                    , starttime => time()
+                    });
+                push @buildsStarted, $build;
+
+                last if ++$started >= $extraAllowed;
+            }
+
+            if ($started > 0) {
+                print STDERR "system type `", $system->system,
+                    "': $nrActive active, $max allowed, started $started builds\n";
+            }
+        }
+    });
+
+    # Actually start the builds we just selected.  We need to do this
+    # outside the transaction in case it aborts or something.
+    foreach my $build (@buildsStarted) {
+        my $id = $build->id;
+        print "starting build $id (", $build->project->name, ":", $build->jobset->name, ':', $build->job->name, ") on ", $build->system, "\n";
+        startBuild $build;
+    }
+}
+
+sub processIO {
+    my ($state) = @_;
+    print ("process-io " . $state->{build}->id . ": pid " . $state->{pid} . "\n");
+    my $count = $state->{outfd}->sysread(my $data, 4096);
+    print ("error reading output of build " . $state->{build}->id . ": " . $! . "\n")
+        if (!defined $count);
+
+    if (!$count) { # eof
+        print ("process-io " . $state->{build}->id . ": eof\n");
+        finishBuild($state);
+        return;
+    }
+    $state->{rawbuffer} .= $data;
+    while ($state->{rawbuffer} =~ /^(.*\n)/) {
+        $state->{buffer} = $1;
+        $state->{rawbuffer} =~ s,^.*\n,,;
+        watchBuild($state);
+        $state->{buffer} = undef;
+    }
+}
+
+if (scalar(@ARGV) == 1) {
+    if ($ARGV[0] eq "--unlock") {
+        unlockDeadBuilds;
+    } else {
+        my $buildId = $ARGV[0];
+        my $build;
+        txn_do($db, sub {
+            $build = $db->resultset('Builds')->find($buildId);
+            die "build $buildId doesn't exist\n" unless defined $build;
+            die "build $buildId already done\n" if $build->finished;
+            if ($build->busy != 0) {
+                die "build $buildId is already being built";
+            }
+            $build->update({busy => 1, locker => $$});
+        });
+        my $state = startBuild $build;
+        processIO($state) while ($mux->can_read());
+    }
+    exit 0;
+} else {
+    unlockDeadBuilds;
+}
+
+chdir Hydra::Model::DB::getHydraPath or die;
+my $dcvalidity = time();
+
+while (1) {
+
+    if (time() - $dcvalidity > 6 * 3600) {
+        $dcvalidity = time();
+        %depcache = (); # free up resources
+    }
+
+    eval {
+
+        if (!defined $lastTime || time() - $lastTime >= 5) {
+            checkBuilds;
+            $lastTime = time();
+        }
+
+        if ($mux->count()) {
+            # can_read includes EOFd handles
+            processIO($running{$_}) for ($mux->can_read(5));
+        } else {
+            sleep(5);
+        }
+    };
+    warn $@ if $@;
+}
