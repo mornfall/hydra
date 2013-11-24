@@ -22,11 +22,29 @@ sub api : Chained('/') PathPart('api') CaptureArgs(0) {
 }
 
 
+sub stepToHash {
+    my ($step) = @_;
+    return {
+        stepnr => $step->stepnr,
+        type => $step->type,
+        drvpath => $step->drvpath,
+        # busy => $step->busy,
+        status => $step->status,
+        starttime => $step->starttime,
+        stoptime => $step->stoptime,
+        machine => $step->machine,
+        system => $step->system
+    };
+}
+
 sub buildToHash {
     my ($build) = @_;
-    my @evals;
+    my (@evals, @steps);
     foreach my $m ($build->jobsetevalmembers->all) {
         push @evals, $m->get_column("eval");
+    }
+    foreach my $s ($build->buildsteps->all) {
+        push @steps, stepToHash($s);
     }
     my $result = {
         id => $build->id,
@@ -34,6 +52,7 @@ sub buildToHash {
         jobset => $build->get_column("jobset"),
         job => $build->get_column("job"),
         evals => \@evals,
+        buildsteps => \@steps,
         system => $build->system,
         nixname => $build->nixname,
         finished => $build->finished,
