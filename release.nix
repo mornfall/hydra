@@ -101,6 +101,7 @@ in rec {
             DBDSQLite
             DataDump
             DateTime
+            DevelSizeMe
             DigestSHA1
             EmailSender
             FileSlurp

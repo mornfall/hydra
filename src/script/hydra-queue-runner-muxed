@@ -1,6 +1,7 @@
 #! /var/run/current-system/sw/bin/perl -w
 
 use strict;
+use Devel::SizeMe qw(total_size perl_size);
 use Cwd;
 use File::Basename;
 use POSIX qw(dup2 :sys_wait_h);
@@ -27,6 +28,8 @@ my $lastTime;
 my %running;
 my $mux = new IO::Select;
 my %depcache; # drvpath -> [drvpath]
+
+$ENV{"SIZEME"} = "/dev/null" if (!$ENV{"SIZEME"}); # XXX work around a bug in SizeMe
 
 #$SIG{CHLD} = 'IGNORE';
 
@@ -543,6 +546,8 @@ sub processIO {
 sub reopenDB {
     $db = undef;
     @plugins = ();
+
+    print STDERR "reopening database; memory used: " . total_size( \%main:: ) . "\n";
 
     $db = Hydra::Model::DB->new();
     @plugins = Hydra::Plugin->instantiate(db => $db, config => $config);
