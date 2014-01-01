@@ -16,9 +16,9 @@ use File::stat;
 use List::MoreUtils qw(all);
 use IO::Select;
 
-my $db = Hydra::Model::DB->new();
+my $db;
+my @plugins;
 my $config = getHydraConfig();
-my @plugins = Hydra::Plugin->instantiate(db => $db, config => $config);
 
 STDOUT->autoflush();
 
@@ -540,6 +540,16 @@ sub processIO {
     }
 }
 
+sub reopenDB {
+    $db = undef;
+    @plugins = ();
+
+    $db = Hydra::Model::DB->new();
+    @plugins = Hydra::Plugin->instantiate(db => $db, config => $config);
+}
+
+reopenDB();
+
 if (scalar(@ARGV) == 1) {
     if ($ARGV[0] eq "--unlock") {
         unlockDeadBuilds;
@@ -565,12 +575,18 @@ if (scalar(@ARGV) == 1) {
 
 chdir Hydra::Model::DB::getHydraPath or die;
 my $dcvalidity = time();
+my $dbvalidity = time();
 
 while (1) {
 
     if (time() - $dcvalidity > 6 * 3600) {
         $dcvalidity = time();
         %depcache = (); # free up resources
+    }
+
+    if (time() - $dbvalidity > 1800) {
+        $dbvalidity = time();
+        reopenDB();
     }
 
     eval {
@@ -587,5 +603,6 @@ while (1) {
             sleep(5);
         }
     };
+
     warn $@ if $@;
 }
