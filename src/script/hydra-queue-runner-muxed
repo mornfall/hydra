@@ -97,20 +97,20 @@ sub failDependents {
 sub watchBuild {
     my ($state) = @_;
 
-    my $build = $state->{build};
-    my $drvPath   = $build->drvpath;
-
     $state->{errormsg} .= $state->{buffer};
 
-    print ("watch-build " . $build->id . ", pid " . $state->{pid} . ": " . $state->{buffer});
+    print ("watch-build " . $state->{buildid} . ", pid " . $state->{pid} . ": " . $state->{buffer});
     unless ($state->{buffer} =~ /^@\s+/) {
         print { $state->{logfd} } $state->{buffer};
         return;
     }
 
-    if ($state->{buffer} =~ /^@\s+build-started\s+(\S+)\s+(\S+)\s+(\S+)\s+(\S+)$/) {
-        my $drvPathStep = $1;
-        txn_do($db, sub {
+    txn_do($db, sub {
+        my $build = $db->resultset('Builds')->find($state->{buildid});
+        my $drvPath   = $build->drvpath;
+
+        if ($state->{buffer} =~ /^@\s+build-started\s+(\S+)\s+(\S+)\s+(\S+)\s+(\S+)$/) {
+            my $drvPathStep = $1;
             my $step = $build->buildsteps->create(
                 { stepnr => ($state->{buildSteps}->{$drvPathStep} = $state->{buildStepNr}++)
                 , type => 0 # = build
@@ -120,44 +120,40 @@ sub watchBuild {
                 , starttime => time
             });
             addBuildStepOutputs($step);
-        });
-    }
+        }
 
-    elsif ($state->{buffer} =~ /^@\s+build-remote\s+(\S+)\s+(\S+)$/) {
-        my $drvPathStep = $1;
-        my $machine = $2;
-        txn_do($db, sub {
+        elsif ($state->{buffer} =~ /^@\s+build-remote\s+(\S+)\s+(\S+)$/) {
+            my $drvPathStep = $1;
+            my $machine = $2;
             my $step = $build->buildsteps->find({stepnr => $state->{buildSteps}->{$drvPathStep}}) or die;
             $step->update({machine => $machine});
-        });
-    }
+        }
 
-    elsif ($state->{buffer} =~ /^@\s+build-succeeded\s+(\S+)\s+(\S+)$/) {
-        my $drvPathStep = $1;
-        txn_do($db, sub {
+        elsif ($state->{buffer} =~ /^@\s+build-succeeded\s+(\S+)\s+(\S+)$/) {
+            my $drvPathStep = $1;
             my $step = $build->buildsteps->find({stepnr => $state->{buildSteps}->{$drvPathStep}}) or die;
             $step->update({busy => 0, status => 0, stoptime => time});
-        });
-    }
-
-    elsif ($state->{buffer} =~ /^@\s+build-failed\s+(\S+)\s+(\S+)\s+(\S+)\s+(.*)$/) {
-        my $drvPathStep = $1;
-        $state->{someBuildFailed} = 1;
-        $state->{thisBuildFailed} = 1 if $drvPath eq $drvPathStep;
-        my $errorMsg;
-        my $status = 1;
-        if ($3 eq "cached") {
-            $status = 8;
-        } elsif ($3 eq "timeout") {
-            $status = 7;
-        } else {
-            $errorMsg = $4;
         }
-        txn_do($db, sub {
+
+        elsif ($state->{buffer} =~ /^@\s+build-failed\s+(\S+)\s+(\S+)\s+(\S+)\s+(.*)$/) {
+            my $drvPathStep = $1;
+            $state->{someBuildFailed} = 1;
+            $state->{thisBuildFailed} = 1 if $drvPath eq $drvPathStep;
+            my $errorMsg;
+            my $status = 1;
+            if ($3 eq "cached") {
+                $status = 8;
+            } elsif ($3 eq "timeout") {
+                $status = 7;
+            } else {
+                $errorMsg = $4;
+            }
+
             if ($state->{buildSteps}->{$drvPathStep}) {
                 my $step = $build->buildsteps->find({stepnr => $state->{buildSteps}->{$drvPathStep}}) or die;
                 $step->update({busy => 0, status => $status, errormsg => $errorMsg, stoptime => time});
             }
+
             # Don't write a record if this derivation already
             # failed previously.  This can happen if this is a
             # restarted build.
@@ -174,15 +170,13 @@ sub watchBuild {
                     });
                 addBuildStepOutputs($step);
             }
-        });
 
-        # Immediately fail all builds that depend on this derivation.
-        failDependents($drvPathStep, $status, $errorMsg, $state->{dependents});
-    }
+            # Immediately fail all builds that depend on this derivation.
+            failDependents($drvPathStep, $status, $errorMsg, $state->{dependents});
+        }
 
-    elsif ($state->{buffer} =~ /^@\s+substituter-started\s+(\S+)\s+(\S+)$/) {
-        my $path = $1;
-        txn_do($db, sub {
+        elsif ($state->{buffer} =~ /^@\s+substituter-started\s+(\S+)\s+(\S+)$/) {
+            my $path = $1;
             my $step = $build->buildsteps->create(
                 { stepnr => ($state->{buildSteps}->{$path} = $state->{buildStepNr}++)
                 , type => 1 # = substitution
@@ -191,34 +185,30 @@ sub watchBuild {
                 });
             # "out" is kinda fake (substitutions don't have named outputs).
             $step->buildstepoutputs->create({ name => "out", path => $path });
-        });
-    }
+        }
 
-    elsif ($state->{buffer} =~ /^@\s+substituter-succeeded\s+(\S+)$/) {
-        my $path = $1;
-        txn_do($db, sub {
+        elsif ($state->{buffer} =~ /^@\s+substituter-succeeded\s+(\S+)$/) {
+            my $path = $1;
             my $step = $build->buildsteps->find({stepnr => $state->{buildSteps}->{$path}}) or die;
             $step->update({busy => 0, status => 0, stoptime => time});
-        });
-    }
+        }
 
-    elsif ($state->{buffer} =~ /^@\s+substituter-failed\s+(\S+)\s+(\S+)\s+(\S+)$/) {
-        my $path = $1;
-        txn_do($db, sub {
+        elsif ($state->{buffer} =~ /^@\s+substituter-failed\s+(\S+)\s+(\S+)\s+(\S+)$/) {
+            my $path = $1;
             my $step = $build->buildsteps->find({stepnr => $state->{buildSteps}->{$path}}) or die;
             $step->update({busy => 0, status => 1, errormsg => $3, stoptime => time});
-        });
-    }
+        }
 
-    else {
-        print { $state->{logfd} } "unknown Nix trace message: $_";
-    }
+        else {
+            print { $state->{logfd} } "unknown Nix trace message: $_";
+        }
+    });
 }
 
 sub finishBuild {
     my ($state) = @_;
 
-    print ("finish-build " . $state->{build}->id . ", pid " . $state->{pid} . "\n");
+    print ("finish-build " . $state->{buildid} . ", pid " . $state->{pid} . "\n");
 
     if ($state->{pid}) {
         # wait for the process to finish
@@ -242,6 +232,8 @@ sub finishBuild {
     }
 
     txn_do($db, sub {
+        my $build = $db->resultset('Builds')->find($state->{buildid});
+
         if ($state->{buildStatus} == 0) {
 
             my $size = 0;
@@ -260,19 +252,19 @@ sub finishBuild {
                 $releaseName //= getReleaseName($path);
             }
 
-            $state->{build}->update(
+            $build->update(
                 { releasename => $releaseName
                 , size => $size
                 , closuresize => $closureSize
                 });
 
-            addBuildProducts($db, $state->{build});
+            addBuildProducts($db, $build);
         }
 
         # Mark any remaining active build steps as aborted.
-        $state->{build}->buildsteps->search({ busy => 1 })->update({ busy => 0, status => 4, stoptime => time });
+        $build->buildsteps->search({ busy => 1 })->update({ busy => 0, status => 4, stoptime => time });
 
-        $state->{build}->update(
+        $build->update(
             { finished => 1
             , busy => 0
             , locker => ''
@@ -284,9 +276,8 @@ sub finishBuild {
             , errormsg => $state->{errormsg}
             });
 
+        notifyBuildFinished(\@plugins, $build, $state->{dependents});
     });
-
-    notifyBuildFinished(\@plugins, $state->{build}, $state->{dependents});
 }
 
 
@@ -304,7 +295,7 @@ sub startBuild {
     $outputs{$_->name} = $_->path foreach $build->buildoutputs->all;
 
     my $state = {
-        build => $build,
+        buildid => $build->id,
         pid => 0,
         dependents => [],
         buildStatus => 0,
@@ -524,13 +515,13 @@ sub checkBuilds {
 
 sub processIO {
     my ($state) = @_;
-    print ("process-io " . $state->{build}->id . ": pid " . $state->{pid} . "\n");
+    print ("process-io " . $state->{buildid} . ": pid " . $state->{pid} . "\n");
     my $count = $state->{outfd}->sysread(my $data, 4096);
-    print ("error reading output of build " . $state->{build}->id . ": " . $! . "\n")
+    print ("error reading output of build " . $state->{buildid} . ": " . $! . "\n")
         if (!defined $count);
 
     if (!$count) { # eof
-        print ("process-io " . $state->{build}->id . ": eof\n");
+        print ("process-io " . $state->{buildid} . ": eof\n");
         finishBuild($state);
         return;
     }
