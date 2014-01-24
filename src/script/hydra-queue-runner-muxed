@@ -535,13 +535,23 @@ sub processIO {
 }
 
 sub reopenDB {
-    $db = undef;
-    @plugins = ();
+    my $sz = total_size( \%main:: );
+    my $sz_dep = total_size( \%depcache );
+    my $sz_db = total_size( \$db );
 
-    print STDERR "reopening database; memory used: " . total_size( \%main:: ) . "\n";
+    if ($db) {
+        $db->storage->disconnect;
+        $db = undef;
+        @plugins = ();
+    }
+
+    my $sz_clo = total_size( \%main:: );
 
     $db = Hydra::Model::DB->new();
     @plugins = Hydra::Plugin->instantiate(db => $db, config => $config);
+
+    print STDERR "database reopened; memory: $sz -> $sz_clo -> " . total_size( \%main:: ) .
+        "; db: $sz_db, depcache: $sz_dep\n";
 }
 
 reopenDB();
