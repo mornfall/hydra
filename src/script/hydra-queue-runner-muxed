@@ -515,7 +515,7 @@ sub checkBuilds {
 
 sub processIO {
     my ($state) = @_;
-    print ("process-io " . $state->{buildid} . ": pid " . $state->{pid} . "\n");
+    # print ("process-io " . $state->{buildid} . ": pid " . $state->{pid} . "\n");
     my $count = $state->{outfd}->sysread(my $data, 4096);
     print ("error reading output of build " . $state->{buildid} . ": " . $! . "\n")
         if (!defined $count);
