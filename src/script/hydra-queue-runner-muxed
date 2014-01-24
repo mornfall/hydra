@@ -205,23 +205,29 @@ sub watchBuild {
     });
 }
 
+sub reap {
+    my ($state) = @_;
+
+    if (!defined $state->{res}) {
+        return if (waitpid($state->{pid}, WNOHANG) < 0);
+        $state->{res} = $?;
+        finishBuild($state);
+    }
+}
+
 sub finishBuild {
     my ($state) = @_;
 
     print ("finish-build " . $state->{buildid} . ", pid " . $state->{pid} . "\n");
 
     if ($state->{pid}) {
-        # wait for the process to finish
-        return if (waitpid($state->{pid}, WNOHANG) < 0);
-        my $res = $?;
-
         delete $running{$state->{outfd}};
         $mux->remove($state->{outfd});
         $state->{stopTime} = time();
         $state->{logfd}->close();
         $state->{outfd}->close();
 
-        if ($res != 0) {
+        if ($state->{res} != 0) {
             if ($state->{thisBuildFailed}) { $state->{buildStatus} = 1; }
             elsif ($state->{someBuildFailed}) { $state->{buildStatus} = 2; }
             else { $state->{buildStatus} = 3; }
@@ -522,7 +528,7 @@ sub processIO {
 
     if (!$count) { # eof
         print ("process-io " . $state->{buildid} . ": eof\n");
-        finishBuild($state);
+        reap($state);
         return;
     }
     $state->{rawbuffer} .= $data;
@@ -603,8 +609,8 @@ while (1) {
         }
 
         if ($mux->count()) {
-            # can_read includes EOFd handles
             processIO($running{$_}) for ($mux->can_read(5));
+            reap($running{$_}) for ($mux->handles);
         } else {
             sleep(5);
         }
