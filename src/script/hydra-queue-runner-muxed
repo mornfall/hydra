@@ -200,7 +200,7 @@ sub watchBuild {
         }
 
         else {
-            print { $state->{logfd} } "unknown Nix trace message: $_";
+            print { $state->{logfd} } "unknown Nix trace message: $state->{buffer}";
         }
     });
 }
