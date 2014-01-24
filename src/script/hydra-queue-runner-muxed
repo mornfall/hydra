@@ -99,7 +99,7 @@ sub watchBuild {
 
     $state->{errormsg} .= $state->{buffer};
 
-    print ("watch-build " . $state->{buildid} . ", pid " . $state->{pid} . ": " . $state->{buffer});
+    # print ("watch-build " . $state->{buildid} . ", pid " . $state->{pid} . ": " . $state->{buffer});
     unless ($state->{buffer} =~ /^@\s+/) {
         print { $state->{logfd} } $state->{buffer};
         return;
