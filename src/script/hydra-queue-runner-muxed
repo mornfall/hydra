@@ -211,6 +211,7 @@ sub reap {
     if (!defined $state->{res} && $state->{pid}) {
         return if (waitpid($state->{pid}, WNOHANG) != $state->{pid});
         $state->{res} = $?;
+        processIO($state); # read in the rest of the output
         finishBuild($state);
     }
 }
@@ -522,13 +523,12 @@ sub checkBuilds {
 sub processIO {
     my ($state) = @_;
     # print ("process-io " . $state->{buildid} . ": pid " . $state->{pid} . "\n");
-    my $count = $state->{outfd}->sysread(my $data, 4096);
+    my $count = $state->{outfd}->sysread(my $data, 4 * 1024 * 1024);
     print ("error reading output of build " . $state->{buildid} . ": " . $! . "\n")
         if (!defined $count);
 
     if (!$count) { # eof
         print ("process-io " . $state->{buildid} . ": eof\n");
-        reap($state);
         return;
     }
     $state->{rawbuffer} .= $data;
