@@ -208,8 +208,8 @@ sub watchBuild {
 sub reap {
     my ($state) = @_;
 
-    if (!defined $state->{res}) {
-        return if (waitpid($state->{pid}, WNOHANG) < 0);
+    if (!defined $state->{res} && $state->{pid}) {
+        return if (waitpid($state->{pid}, WNOHANG) != $state->{pid});
         $state->{res} = $?;
         finishBuild($state);
     }
