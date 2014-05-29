@@ -230,8 +230,8 @@ in
         path = [ pkgs.nettools ];
         environment = env;
         serviceConfig =
-          { ExecStartPre = "${cfg.package}/bin/hydra-queue-runner --unlock";
-            ExecStart = "@${cfg.package}/bin/hydra-queue-runner hydra-queue-runner";
+          { ExecStartPre = "${cfg.package}/bin/hydra-queue-runner-muxed --unlock";
+            ExecStart = "@${cfg.package}/bin/hydra-queue-runner-muxed hydra-queue-runner-muxed";
             User = "hydra";
             Restart = "always";
           };
