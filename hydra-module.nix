@@ -159,12 +159,12 @@ in
 
     environment.variables = hydraEnv;
 
-    users.extraUsers.hydra =
-      { description = "Hydra";
-        home = baseDir;
-        createHome = true;
-        useDefaultShell = true;
-      };
+#    users.extraUsers.hydra =
+#      { description = "Hydra";
+#        home = baseDir;
+#        createHome = true;
+#        useDefaultShell = true;
+#      };
 
     nix.extraOptions = ''
       gc-keep-outputs = true
