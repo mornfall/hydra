@@ -233,9 +233,18 @@ void run(Strings args)
        $NIX_PATH. */
     unsetenv("NIX_PATH");
 
-    EvalState state;
+    Strings searchPath, args2;
     Path releaseExpr;
     AutoArgs autoArgs;
+
+    for (Strings::iterator i = args.begin(); i != args.end(); ) {
+        string arg = *i++;
+        if (!parseSearchPathArg(arg, i, args.end(), searchPath))
+            args2.push_back(arg);
+    }
+
+    args = args2;
+    EvalState state(searchPath);
 
     for (Strings::iterator i = args.begin(); i != args.end(); ) {
         string arg = *i++;
@@ -259,8 +268,6 @@ void run(Strings args)
             if (i == args.end()) throw UsageError("missing argument");
             gcRootsDir = *i++;
         }
-        else if (parseSearchPathArg(arg, i, args.end(), state))
-            ;
         else if (arg[0] == '-')
             throw UsageError(format("unknown flag `%1%'") % arg);
         else
