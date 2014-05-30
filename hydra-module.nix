@@ -186,8 +186,8 @@ in
 
     systemd.services."hydra-init" =
       { wantedBy = [ "multi-user.target" ];
-        requires = [ "postgresql.service" ];
-        after = [ "postgresql.service" ];
+        #requires = [ "postgresql.service" ];
+        #after = [ "postgresql.service" ];
         environment = env;
         preStart = ''
           mkdir -m 0700 -p ${baseDir}/data
