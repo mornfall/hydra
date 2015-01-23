@@ -1,7 +1,7 @@
 #! /var/run/current-system/sw/bin/perl -w
 
 use strict;
-use Devel::SizeMe qw(total_size perl_size);
+#use Devel::SizeMe qw(total_size perl_size);
 use Cwd;
 use File::Basename;
 use POSIX qw(dup2 :sys_wait_h);
@@ -541,9 +541,9 @@ sub processIO {
 }
 
 sub reopenDB {
-    my $sz = total_size( \%main:: );
-    my $sz_dep = total_size( \%depcache );
-    my $sz_db = total_size( \$db );
+    # my $sz = total_size( \%main:: );
+    # my $sz_dep = total_size( \%depcache );
+    # my $sz_db = total_size( \$db );
 
     if ($db) {
         $db->storage->disconnect;
@@ -551,13 +551,13 @@ sub reopenDB {
         @plugins = ();
     }
 
-    my $sz_clo = total_size( \%main:: );
+    # my $sz_clo = total_size( \%main:: );
 
     $db = Hydra::Model::DB->new();
     @plugins = Hydra::Plugin->instantiate(db => $db, config => $config);
 
-    print STDERR "database reopened; memory: $sz -> $sz_clo -> " . total_size( \%main:: ) .
-        "; db: $sz_db, depcache: $sz_dep\n";
+    # print STDERR "database reopened; memory: $sz -> $sz_clo -> " . total_size( \%main:: ) .
+    #     "; db: $sz_db, depcache: $sz_dep\n";
 }
 
 reopenDB();
